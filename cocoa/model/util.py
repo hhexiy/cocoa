@@ -63,6 +63,14 @@ def batch_linear(args, output_size, bias):
     output = tf.reshape(flat_output, [batch_size, -1, output_size])
     return output
 
+def smart_variable(tensor, is_var=False):
+  # If the "tensor" is actually already a variable, then no need to update
+  result = tensor if is_var else Variable(tensor)
+  if use_cuda:
+    return result.cuda()
+  else:
+    return result
+
 def transpose_first_two_dims(batch_input):
     rank = batch_input.shape.ndims
     return tf.transpose(batch_input, perm=[1, 0]+range(2, rank))
