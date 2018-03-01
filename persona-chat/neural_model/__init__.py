@@ -13,6 +13,7 @@ def add_data_generator_arguments(parser):
     add_price_tracker_arguments(parser)
     add_slot_detector_arguments(parser)
 
+# We skip this for now to keep things simpler
 def get_data_generator(args, model_args, mappings, schema):
     from cocoa.core.scenario_db import ScenarioDB
     from cocoa.core.dataset import read_dataset, EvalExample

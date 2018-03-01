@@ -73,42 +73,25 @@ if __name__ == '__main__':
         write_json(vars(args), config_path)
         model_args = args
         ckpt = None
-    '''
 
     # Load vocab
-    # TODO: put this in DataGenerator
-    vocab_path = os.path.join(model_args.mappings, 'vocab.pkl')
+    vocab_path = 'data/persona_vocab.pkl'
     if not os.path.exists(vocab_path):
         print 'Vocab not found at', vocab_path
-        mappings = None
+        vocab = None
         args.ignore_cache = True
     else:
-        print 'Load vocab from', vocab_path
-        mappings = read_pickle(vocab_path)
-        for k, v in mappings.iteritems():
-            print k, v.size
+        print 'Loading vocab from', vocab_path
+        vocab = read_pickle(vocab_path)
 
     schema = Schema(model_args.schema_path, None)
-
-    data_generator = get_data_generator(args, model_args, mappings, schema)
-
-    for d, n in data_generator.num_examples.iteritems():
-        logstats.add('data', d, 'num_dialogues', n)
-
-    # Save mappings
-    if not mappings:
-        mappings = data_generator.mappings
-        vocab_path = os.path.join(args.mappings, 'vocab.pkl')
-        write_pickle(mappings, vocab_path)
-    for name, m in mappings.iteritems():
-        logstats.add('mappings', name, 'size', m.size)
-
-    # Build the model
-    logstats.add_args('model_args', model_args)
-    model = build_model(schema, mappings, data_generator.trie, model_args)
+    data_generator = DataGenerator(args, model_args, vocab, schema)
 
     use_cuda = cuda.is_available()
     print 'Using GPU' if use_cuda else 'GPU is disabled'
+
+    # for d, n in data_generator.num_examples.iteritems():
+    #     logstats.add('data', d, 'num_dialogues', n)
 
     # if args.test:
     #     evaluator = get_evaluator(data_generator, model, splits=('test',), batch_size=args.batch_size, verbose=args.verbose)
