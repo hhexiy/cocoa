@@ -74,7 +74,7 @@ def create_batches(personas, events, agent_id):
 
 def generate_data():
     versions = ["revised", "original"]
-    splits = ["test", "train", "val"]
+    splits = ["test", "train", "valid"]
 
     all_sentences = []
     for split in splits:
@@ -95,6 +95,7 @@ def generate_data():
 
                 all_batches.extend(create_batches(personas_0, events, 0))
                 all_batches.extend(create_batches(personas_1, events, 1))
+            print("Finished pre-processing {0}_{1}".format(split, version))
 
         write_pickle(all_batches, out_filename)
     vocabulary = build_vocab(all_sentences, markers)
