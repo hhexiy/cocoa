@@ -1,12 +1,11 @@
 from itertools import izip
 import numpy as np
-from tensorflow.python.util import nest
-from tensorflow.contrib.rnn.python.ops.rnn_cell import _linear
-import tensorflow as tf
+from torch.autograd import Variable
+from torch import cuda
+from torch import LongTensor
 
 EPS = 1e-12
-
-linear = _linear
+use_cuda = cuda.is_available()
 
 def safe_div(numerator, denominator):
     return numerator / (denominator + EPS)
@@ -63,32 +62,20 @@ def batch_linear(args, output_size, bias):
     output = tf.reshape(flat_output, [batch_size, -1, output_size])
     return output
 
+def smart_variable(data, dtype="tensor"):
+    if dtype == "list":
+        result = Variable(LongTensor(data))
+    elif dtype == "tensor":
+        result = Variable(data)
+    elif dtype == "var":
+        result = data
+
+    return result.cuda() if use_cuda else result
+
 def transpose_first_two_dims(batch_input):
-    rank = batch_input.shape.ndims
-    return tf.transpose(batch_input, perm=[1, 0]+range(2, rank))
+    rank = len(batch_input.size)
+    return torch.transpose(batch_input, perm=[1, 0]+range(2, rank))
 
-def _tile_single_tensor(t, multiplier):
-    '''
-    Tile a single tensor
-    (batch, ...) -> (batch * multiplier, ...)
-    '''
-    shape_t = tf.shape(t)
-    tiling = [1] * (t.shape.ndims + 1)
-    tiling[1] = multiplier
-    tiled = tf.tile(tf.expand_dims(t, 1), tiling)
-    tiled = tf.reshape(tiled, tf.concat([[shape_t[0] * multiplier], shape_t[1:]], axis=0))
-    # Presearve static shapes
-    tiled_static_batch_size = (t.shape[0].value * multiplier if t.shape[0].value is not None else None)
-    tiled.set_shape(
-        tf.TensorShape(
-            [tiled_static_batch_size]).concatenate(t.shape[1:]))
-    return tiled
-
-def tile_tensor(t, multiplier):
-    '''
-    Tile a possibly nested tensor where each tensor has first dimension batch_size.
-    '''
-    return nest.map_structure(lambda t_: _tile_single_tensor(t_, multiplier), t)
 
 def resettable_metric(metric, scope_name, **metric_args):
     '''
