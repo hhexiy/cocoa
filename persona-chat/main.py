@@ -10,7 +10,6 @@ import sys
 from itertools import chain
 from torch import optim
 from torch import cuda
-from torch.autograd import Variable
 from torch.nn.utils import clip_grad_norm
 from torch.nn import NLLLoss, parameter
 
@@ -27,6 +26,7 @@ if __name__ == '__main__':
     # parser.add_argument('--stats-file', help='Path to save json statistics (dataset, training etc.) file')
     parser.add_argument('--test', default=False, action='store_true', help='Test mode')
     parser.add_argument('--eval', default=False, action='store_true', help='Eval mode')
+    parser.add_argument('--save-results', default=False, action='store_true', help='If true, store model checkpoints')
     parser.add_argument('--eval-output', default=None, help='JSON file to save evaluation results')
     parser.add_argument('--best', default=False, action='store_true', help='Test using the best model on dev set')
     parser.add_argument('--verbose', default=False, action='store_true', help='More prints')
@@ -59,8 +59,8 @@ if __name__ == '__main__':
         # Load Model
         if args.test and args.best:
             print("Loading model from checkpoint ...")
-            encoder = torch.load(args.init_from+'encoder-best')
-            decoder = torch.load(args.init_from+'decoder-best')
+            encoder = torch.load(args.init_from+args.checkpoint+'encoder.pt')
+            decoder = torch.load(args.init_from+args.checkpoint+'decoder.pt')
         else:
             print("Creating new model...")
             encoder = GRU_Encoder(args.word_embed_size, args.num_layers)
@@ -88,8 +88,12 @@ if __name__ == '__main__':
     # train_batches = DialogueBatcher(vocab, "train")
     # val_batches = DialogueBatcher(vocab, "valid")
 
-    use_cuda = cuda.is_available()
-    print 'Using GPU' if use_cuda else 'GPU is disabled'
+    if cuda.is_available():
+        print 'Using GPU'
+        encoder = encoder.cuda()
+        decoder = decoder.cuda()
+    else:
+        print 'GPU is disabled'
 
     # for d, n in data_generator.num_examples.iteritems():
     #     logstats.add('data', d, 'num_dialogues', n)
@@ -110,5 +114,7 @@ if __name__ == '__main__':
 
     # else:
     # evaluator = get_evaluator(data_generator, model, splits=('dev',), batch_size=args.batch_size, verbose=args.verbose)
-    learner = Learner(args, encoder, decoder, vocab, use_cuda)
-    learner.learn(args)
+    learner = Learner(args, encoder, decoder, vocab)
+    results = learner.learn(args)
+    if args.save_results:
+        learner.save_model(args)

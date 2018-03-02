@@ -1,13 +1,19 @@
 import numpy as np
 import time as tm
+import random
+import os
+import pdb # set_trace()
 
 from cocoa.lib import logstats
 from cocoa.lib.bleu import compute_bleu
 from neural_model.batcher import DialogueBatcher
+from cocoa.pt_model.util import smart_variable
 # from cocoa.model.learner import Learner as BaseLearner, add_learner_arguments
 
 from torch.nn import NLLLoss, parameter
+from torch.nn.utils import clip_grad_norm
 from torch import optim
+import torch
 
 def add_learner_arguments(parser):
     parser.add_argument('--optimizer', default='sgd', help='Optimization method')
@@ -17,40 +23,42 @@ def add_learner_arguments(parser):
     parser.add_argument('--min-epochs', type=int, default=10, help='Number of training epochs to run before checking for early stop')
     parser.add_argument('--max-epochs', type=int, default=50, help='Maximum number of training epochs')
     parser.add_argument('--num-per-epoch', type=int, default=None, help='Number of examples per epoch')
-    parser.add_argument('--print-every', type=int, default=1, help='Number of examples between printing training loss')
-    parser.add_argument('--init-from', default="data/first-trial", help='Initial parameters')
-    parser.add_argument('--checkpoint', default='.', help='Directory to save learned models')
+    parser.add_argument('--print-every', type=int, default=100, help='Number of examples between printing training loss')
+    parser.add_argument('--val-every', type=int, default=140, help='Number of examples between printing validation loss')
+    parser.add_argument('--init-from', default="checkpoints/", help='Initial parameters')
+    parser.add_argument('--checkpoint', default='pytorch_model', help='Directory to save learned models')
     parser.add_argument('--mappings', default='.', help='Directory to save mappings/vocab')
     parser.add_argument('--gpu', type=int, default=0, help='Use GPU or not')
     parser.add_argument('--summary-dir', default='/tmp', help='Path to summary logs')
     parser.add_argument('--eval-modes', nargs='*', default=('loss',), help='What to evaluate {loss, generation}')
 
 class Learner(object):
-    def __init__(self, args, encoder, decoder, vocab, use_cuda):
-        self.encoder = encoder.cuda() if use_cuda else encoder
-        self.decoder = decoder.cuda() if use_cuda else decoder
+    def __init__(self, args, encoder, decoder, vocab):
+        self.encoder = encoder
+        self.decoder = decoder
         self.enc_optimizer = self.add_optimizers(self.encoder, args)
         self.dec_optimizer = self.add_optimizers(self.decoder, args)
 
         self.vocab = vocab
-        self.summary_dir = args.summary_dir
-        self.verbose = args.verbose
-        # self.evaluator = evaluator
         self.create_embeddings()
+        self.start_token = vocab.word_to_ind['<s>']
+        self.end_token = vocab.word_to_ind['</s>']
+        # self.evaluator = evaluator
 
-        # self.train_data = DialogueBatcher(vocab, "train")
-        # self.val_data = DialogueBatcher(vocab, "valid")
-        self.toy_data = DialogueBatcher(vocab, "toy")
+        self.train_data = DialogueBatcher(vocab, "toy")
+        self.val_data = DialogueBatcher(vocab, "toy")
         # self.test_data = DialogueBatcher(vocab, "test")
 
-        self.use_cuda = use_cuda
+        self.summary_dir = args.summary_dir
+        self.verbose = args.verbose
         self.criterion = NLLLoss()
         self.teach_ratio = args.teacher_forcing_ratio
+        self.grad_clip = args.grad_clip
 
-        self.train_iterations = self.toy_data.num_per_epoch * args.min_epochs
-        self.val_iterations = self.toy_data.num_per_epoch * args.min_epochs
-        self.train_print_every = 500
-        self.val_print_every = 700
+        self.train_iterations = self.train_data.num_per_epoch * args.min_epochs
+        self.val_iterations = self.train_data.num_per_epoch * args.min_epochs
+        self.print_every = args.print_every
+        self.val_every = args.val_every
 
     def _run_batch(self, dialogue_batch, sess, summary_map, test=True):
         raise NotImplementedError
@@ -86,27 +94,13 @@ class Learner(object):
             success = batcher.print_batch(batch, i, textint_map, preds)
         print 'BATCH LOSS:', loss
 
-    def eval(self, sess, name, test_data, num_batches, output=None, modes=('loss',)):
-        print '================== Eval %s ==================' % name
-        results = {}
+    def evaluate(self, batch_val_loss, batch_bleu):
+        avg_val_loss = sum(batch_val_loss) * 1.0 / len(batch_val_loss)
+        avg_bleu = 100 * float(sum(batch_bleu)) / len(batch_bleu)
 
-        if 'loss' in modes:
-            print '================== Loss =================='
-            start_time = time.time()
-            summary_map = self.test_loss(sess, test_data, num_batches)
-            results = self.collect_summary_test(summary_map, results)
-            results_str = ' '.join(['{}={:.4f}'.format(k, v) for k, v in results.iteritems()])
-            print '%s time(s)=%.4f' % (results_str, time.time() - start_time)
-
-        if 'generation' in modes:
-            print '================== Generation =================='
-            start_time = time.time()
-            res = self.evaluator.test_response_generation(sess, test_data, num_batches, output=output)
-            results.update(res)
-            # TODO: hacky. for LM only.
-            if len(results) > 0:
-                print '%s time(s)=%.4f' % (self.evaluator.stats2str(results), time.time() - start_time)
-        return results
+        print('Validation Loss: {0:2.4f}, BLEU Score: {1:.2f}'.format(
+            avg_val_loss, avg_bleu))
+        return avg_val_loss, avg_bleu
 
     def learn(self, args):
         start = tm.time()
@@ -120,58 +114,50 @@ class Learner(object):
 
         iters = self.train_iterations
         print_loss_total = 0  # Reset every print_every
-        plot_loss_total = 0  # Reset every plot_every
-
-        enc_scheduler = StepLR(self.enc_optimizer, step_size=iters/3, gamma=0.2)
-        dec_scheduler = StepLR(self.dec_optimizer, step_size=iters/3, gamma=0.2)
+        # plot_loss_total = 0  # Reset every plot_every
+        # enc_scheduler = StepLR(self.enc_optimizer, step_size=iters/3, gamma=0.2)
+        # dec_scheduler = StepLR(self.dec_optimizer, step_size=iters/3, gamma=0.2)
 
         for iter in range(1, iters + 1):
-            enc_scheduler.step()
-            dec_scheduler.step()
-
+            # enc_scheduler.step()
+            # dec_scheduler.step()
             training_pair = self.train_data.get_batch()
             input_variable = training_pair[0]
             output_variable = training_pair[1]
 
-            starting_checkpoint(iter)
-            loss = train(input_variable, output_variable)
+            loss = self.train(input_variable, output_variable)
             print_loss_total += loss
-            plot_loss_total += loss
+            # plot_loss_total += loss
 
-            if iter % print_every == 0:
-                print_loss_avg = print_loss_total / print_every
+            if iter % self.print_every == 0:
+                print_loss_avg = print_loss_total / self.print_every
                 print_loss_total = 0
-                print('%d%% complete %s, Train Loss: %.4f' % ((iter / iters * 100),
-                    timeSince(start, iter / iters), print_loss_avg))
+                print('{0:3.1f}% complete in {1:.2f} minutes, Train Loss: {2:.4f}'.format(
+                    ((iter*100.0) / iters), (tm.time() - start)/60.0, print_loss_avg))
                 train_losses.append(print_loss_avg)
                 train_steps.append(iter)
 
-            if iter % val_every == 0:
+            if iter % self.val_every == 0:
                 val_steps.append(iter)
-                batch_val_loss, batch_bleu, batch_success = [], [], []
+                batch_val_loss, batch_bleu = [], []
                 for iter in range(1, self.val_iterations + 1):
-                    val_pair = validation_pairs[iter - 1]
+                    val_pair = self.val_data.get_batch()
                     val_input = val_pair[0]
                     val_output = val_pair[1]
-                    val_loss, bleu_score, turn_success = validate(val_input, \
-                          val_output, task)
+                    val_loss, bleu_score = self.validate(val_input, val_output)
                     batch_val_loss.append(val_loss)
                     batch_bleu.append(bleu_score)
-                    batch_success.append(turn_success)
 
-                avg_val_loss, avg_bleu, avg_success = evaluate.batch_processing(
-                                              batch_val_loss, bleu_score, batch_success)
-                # val_losses.append(avg_val_loss)
+                avg_val_loss, avg_bleu = self.evaluate(batch_val_loss, batch_bleu)
+                val_losses.append(avg_val_loss)
                 bleu_scores.append(avg_bleu)
-                accuracy.append(avg_success)
-                # save_path = os.path.join(args.checkpoint, 'tf_model.ckpt')
-                # best_saver = tf.train.Saver(max_to_keep=1)
-                # best_checkpoint = args.checkpoint+'-best'
 
-        time_past(start)
-        return train_steps, train_losses, val_steps, val_losses, accuracy
+        print('100.0% complete in {0:.2f} minutes, Train Loss: {1:.4f}'.format(
+            (tm.time() - start)/60.0, print_loss_avg))
 
-    def run_inference(sources, targets, teach_ratio):
+        return train_steps, train_losses, val_steps, val_losses
+
+    def run_inference(self, sources, targets, teach_ratio):
         loss = 0
         encoder_hidden = self.encoder.initHidden()
         encoder_length = sources.size()[0]
@@ -179,7 +165,7 @@ class Learner(object):
 
         decoder_hidden = encoder_hidden
         decoder_length = targets.size()[0]
-        decoder_input = smart_variable(torch.LongTensor([[vocab.SOS_token]]))
+        decoder_input = smart_variable([self.start_token], "list")
         decoder_context = smart_variable(torch.zeros(1, 1, self.decoder.hidden_size))
         # visual = torch.zeros(encoder_length, decoder_length)
         predictions = []
@@ -198,46 +184,44 @@ class Learner(object):
                 topv, topi = decoder_output.data.topk(1)
                 ni = topi[0][0]
                 predictions.append(ni)
-                if ni == vocab.EOS_token:
+                if ni == self.end_token:
                     break
-                decoder_input = smart_variable(torch.LongTensor([[ni]]))
+                decoder_input = smart_variable([ni], "list")
 
         return loss, predictions
 
-    def train(input_variable, target_variable):
+    def train(self, input_variable, target_variable):
         self.encoder.train()
         self.decoder.train()
         self.enc_optimizer.zero_grad()
         self.dec_optimizer.zero_grad()
 
-        loss, _ = run_inference(input_variable, target_variable, self.teach_ratio)
+        loss, _ = self.run_inference(input_variable, target_variable, self.teach_ratio)
 
         loss.backward()
-        if args.grad_clip > 0:
-            clip_grad_norm(self.encoder.parameters(), args.grad_clip)
-            clip_grad_norm(self.decoder.parameters(), args.grad_clip)
-        enc_optimizer.step()
-        dec_optimizer.step()
+        if self.grad_clip > 0:
+            clip_grad_norm(self.encoder.parameters(), self.grad_clip)
+            clip_grad_norm(self.decoder.parameters(), self.grad_clip)
+        self.enc_optimizer.step()
+        self.dec_optimizer.step()
 
         return loss.data[0] / target_variable.size()[0]
 
-    def validate(input_variable, target_variable, task):
+    def validate(self, input_variable, target_variable):
         self.encoder.eval()  # affects the performance of dropout
         self.decoder.eval()
 
-        loss, predictions = run_inference(input_variable, target_variable, teach_ratio=0)
-
-        queries = input_variable.data.tolist()
+        loss, predictions = self.run_inference(input_variable, target_variable, teach_ratio=0)
+        # queries = input_variable.data.tolist()
         targets = target_variable.data.tolist()
-        predicted_tokens = [vocab.index_to_word(x, task) for x in predictions]
-        query_tokens = [vocab.index_to_word(y[0], task) for y in queries]
-        target_tokens = [vocab.index_to_word(z[0], task) for z in targets]
+        predicted_tokens = [self.vocab.ind_to_word[x] for x in predictions]
+        # query_tokens = [self.vocab.ind_to_word[y] for y in queries]
+        target_tokens = [self.vocab.ind_to_word[z] for z in targets]
 
         avg_loss = loss.data[0] / target_variable.size()[0]
-        bleu_score = 14 # compute_bleu(predicted_tokens, target_tokens)
-        turn_success = [pred == tar[0] for pred, tar in zip(predictions, targets)]
-
-        return avg_loss, bleu_score, all(turn_success)
+        bleu_score = compute_bleu(predicted_tokens, target_tokens) * 100
+        # turn_success = [pred == tar for pred, tar in zip(predictions, targets)]
+        return avg_loss, bleu_score
 
         # Save model after each epoch
         # print 'Save model checkpoint to', save_path
@@ -267,6 +251,19 @@ class Learner(object):
         # if (epoch > args.min_epochs and num_epoch_no_impr >= 5) or epoch > args.max_epochs:
         #     break
         # epoch += 1
+
+    def save_model(self, args):
+        if not os.path.isdir(os.path.dirname(args.init_from)):
+            os.makedirs(os.path.dirname(args.init_from))
+
+        enc_path = os.path.join(args.init_from, args.checkpoint+'_encoder.pt')
+        torch.save(self.encoder, enc_path)
+        print("Saved encoder to {}".format(enc_path))
+
+        dec_path = os.path.join(args.init_from, args.checkpoint+'_decoder.pt')
+        torch.save(self.decoder, dec_path)
+        print("Saved deccoder to {}".format(dec_path))
+
 
     # def log_results(self, name, results):
     #     logstats.add(name, {'loss': results.get('loss', None)})

@@ -5,8 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pdb  # set_trace
 
-from cocoa.model.util import EPS, tile_tensor, smart_variable
-from cocoa.model.util import transpose_first_two_dims, batch_embedding_lookup, EPS
+from cocoa.pt_model.util import EPS, smart_variable
 from cocoa.model.sequence_embedder import AttentionRNNEmbedder, BoWEmbedder
 from preprocess import markers
 
