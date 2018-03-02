@@ -6,6 +6,7 @@ import argparse
 import random
 import os
 import time
+import sys
 from itertools import chain
 from torch import optim
 from torch import cuda
@@ -17,9 +18,8 @@ from cocoa.core.util import read_json, write_json, read_pickle, write_pickle
 from cocoa.core.schema import Schema
 from cocoa.lib import logstats
 
-from neural_model import add_data_generator_arguments, get_data_generator, add_model_arguments, build_model
+from neural_model.encdec import add_model_arguments, GRU_Encoder, Attn_Decoder
 from neural_model.learner import add_learner_arguments, Learner
-from neural_model.evaluate import get_evaluator
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -32,7 +32,7 @@ if __name__ == '__main__':
     parser.add_argument('--verbose', default=False, action='store_true', help='More prints')
     # add_data_generator_arguments(parser)
     add_model_arguments(parser)
-    # add_learner_arguments(parser)
+    add_learner_arguments(parser)
     args = parser.parse_args()
 
     random.seed(args.random_seed)
@@ -54,17 +54,17 @@ if __name__ == '__main__':
         # saved_config['batch_size'] = args.batch_size
         # saved_config['pretrained_wordvec'] = args.pretrained_wordvec
         # saved_config['ranker'] = args.ranker
+        # model_args = argparse.Namespace(**saved_config)
 
         # Load Model
-        model_args = argparse.Namespace(**saved_config)
         if args.test and args.best:
             print("Loading model from checkpoint ...")
             encoder = torch.load(args.init_from+'encoder-best')
             decoder = torch.load(args.init_from+'decoder-best')
         else:
             print("Creating new model...")
-            encoder = GRU_Encoder(model_args)
-            decoder = Attn_Decoder(model_args)
+            encoder = GRU_Encoder(args.word_embed_size, args.num_layers)
+            decoder = Attn_Decoder(args.word_embed_size, args.attn_method, args.dropout)
     else:
         # Save config
         if not os.path.isdir(args.checkpoint):
@@ -84,8 +84,9 @@ if __name__ == '__main__':
         print 'Loading vocab from', vocab_path
         vocab = read_pickle(vocab_path)
 
-    schema = Schema(model_args.schema_path, None)
-    data_generator = DataGenerator(args, model_args, vocab, schema)
+    # schema = Schema(model_args.schema_path, None)
+    # train_batches = DialogueBatcher(vocab, "train")
+    # val_batches = DialogueBatcher(vocab, "valid")
 
     use_cuda = cuda.is_available()
     print 'Using GPU' if use_cuda else 'GPU is disabled'
@@ -107,9 +108,7 @@ if __name__ == '__main__':
     #         results = learner.eval(sess, split, test_data, num_batches, output=args.eval_output, modes=args.eval_modes)
     #         learner.log_results(split, results)
 
-    else:  # training or validation
-        # evaluator = get_evaluator(data_generator, model, splits=('dev',), batch_size=args.batch_size, verbose=args.verbose)
-        learner = Learner(data_generator, model, evaluator=None,
-            batch_size=args.batch_size, verbose=args.verbose,
-            sample_targets=args.sample_targets, summary_dir=args.summary_dir)
-        learner.learn(args, config, args.stats_file, ckpt)
+    # else:
+    # evaluator = get_evaluator(data_generator, model, splits=('dev',), batch_size=args.batch_size, verbose=args.verbose)
+    learner = Learner(args, encoder, decoder, vocab, use_cuda)
+    learner.learn(args)

@@ -82,7 +82,7 @@ def get_data_generator(args, model_args, mappings, schema):
     return data_generator
 
 def add_model_arguments(parser):
-    from cocoa.model.encdec import add_basic_model_arguments
+    from model.encdec import add_model_arguments
     from cocoa.model.sequence_embedder import add_sequence_embedder_arguments
     from encdec import add_model_arguments
     from price_predictor import add_price_predictor_arguments

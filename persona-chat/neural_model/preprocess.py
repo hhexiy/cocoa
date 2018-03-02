@@ -99,7 +99,6 @@ def generate_data():
 
         write_pickle(all_batches, out_filename)
     vocabulary = build_vocab(all_sentences, markers)
-    pdb.set_trace()
     write_pickle(vocabulary, "data/persona_vocab.pkl")
 
 if __name__ == "__main__":

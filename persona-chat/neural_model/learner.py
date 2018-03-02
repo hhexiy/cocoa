@@ -1,10 +1,13 @@
 import numpy as np
+import time as tm
 
 from cocoa.lib import logstats
-# from cocoa.model.learner import Learner as BaseLearner, add_learner_arguments
 from cocoa.lib.bleu import compute_bleu
+from neural_model.batcher import DialogueBatcher
+# from cocoa.model.learner import Learner as BaseLearner, add_learner_arguments
 
-# from model.ranker import EncDecRanker
+from torch.nn import NLLLoss, parameter
+from torch import optim
 
 def add_learner_arguments(parser):
     parser.add_argument('--optimizer', default='sgd', help='Optimization method')
@@ -15,83 +18,73 @@ def add_learner_arguments(parser):
     parser.add_argument('--max-epochs', type=int, default=50, help='Maximum number of training epochs')
     parser.add_argument('--num-per-epoch', type=int, default=None, help='Number of examples per epoch')
     parser.add_argument('--print-every', type=int, default=1, help='Number of examples between printing training loss')
-    parser.add_argument('--init-from', help='Initial parameters')
+    parser.add_argument('--init-from', default="data/first-trial", help='Initial parameters')
     parser.add_argument('--checkpoint', default='.', help='Directory to save learned models')
     parser.add_argument('--mappings', default='.', help='Directory to save mappings/vocab')
     parser.add_argument('--gpu', type=int, default=0, help='Use GPU or not')
     parser.add_argument('--summary-dir', default='/tmp', help='Path to summary logs')
     parser.add_argument('--eval-modes', nargs='*', default=('loss',), help='What to evaluate {loss, generation}')
 
-optim = {'adagrad': optim.Adagrad,
-         'sgd': optim.SGD,
-         'adam': optim.Adam,
-        }
-
 class Learner(object):
-    def __init__(self, data, model, evaluator, batch_size=1, summary_dir='/tmp', verbose=False):
-        self.data = data  # DataGenerator object
-        self.model = model
-        self.vocab = data.mappings['vocab']
-        self.batch_size = batch_size
-        self.evaluator = evaluator
-        self.verbose = verbose
-        self.summary_dir = summary_dir
+    def __init__(self, args, encoder, decoder, vocab, use_cuda):
+        self.encoder = encoder.cuda() if use_cuda else encoder
+        self.decoder = decoder.cuda() if use_cuda else decoder
+        self.enc_optimizer = self.add_optimizers(self.encoder, args)
+        self.dec_optimizer = self.add_optimizers(self.decoder, args)
 
-    def _run_batch(self, dialogue_batch, test=False):
-        '''
-        Run truncated RNN through a sequence of batch examples.
-        '''
-        for batch in dialogue_batch['batch_seq']:
-            # TODO: hacky
-            if init_price_history is None and hasattr(self.model.decoder, 'price_predictor'):
-                batch_size = batch['encoder_inputs'].shape[0]
-                init_price_history = self.model.decoder.price_predictor.zero_init_price(batch_size)
-            feed_dict = self._get_feed_dict(batch, encoder_init_state, test=test, init_price_history=init_price_history)
-            fetches = {
-                    'loss': self.model.loss,
-                    }
+        self.vocab = vocab
+        self.summary_dir = args.summary_dir
+        self.verbose = args.verbose
+        # self.evaluator = evaluator
+        self.create_embeddings()
 
-            if self.model.name == 'encdec':
-                fetches['raw_preds'] = self.model.decoder.output_dict['logits']
-            elif self.model.name == 'selector':
-                fetches['raw_preds'] = self.model.decoder.output_dict['scores']
-            else:
-                raise ValueError
+        # self.train_data = DialogueBatcher(vocab, "train")
+        # self.val_data = DialogueBatcher(vocab, "valid")
+        self.toy_data = DialogueBatcher(vocab, "toy")
+        # self.test_data = DialogueBatcher(vocab, "test")
 
-            if not test:
-                fetches['train_op'] = self.train_op
-                fetches['gn'] = self.grad_norm
-            else:
-                fetches['total_loss'] = self.model.total_loss
+        self.use_cuda = use_cuda
+        self.criterion = NLLLoss()
+        self.teach_ratio = args.teacher_forcing_ratio
 
-            if self.model.stateful:
-                fetches['final_state'] = self.model.final_state
+        self.train_iterations = self.toy_data.num_per_epoch * args.min_epochs
+        self.val_iterations = self.toy_data.num_per_epoch * args.min_epochs
+        self.train_print_every = 500
+        self.val_print_every = 700
 
-            if not test:
-                self.global_step += 1
-                if self.global_step % 100 == 0:
-                    self.train_writer.add_summary(results['merged'], self.global_step)
-
-            # if self.verbose:
-            #     preds = self.model.output_to_preds(results['raw_preds'])
-            #     self._print_batch(batch, preds, results['loss'])
-
-
-            # TODO: refactor
-            if self.model.name == 'selector':
-                labels = batch['decoder_args']['candidate_labels']
-                preds = results['raw_preds']
-                for k in (1, 5):
-                    recall = self.evaluator.recall_at_k(labels, preds, k=k, summary_map=summary_map)
-                    logstats.update_summary_map(summary_map, {'recall_at_{}'.format(k): recall})
+    def _run_batch(self, dialogue_batch, sess, summary_map, test=True):
+        raise NotImplementedError
 
     def test_loss(self, sess, test_data, num_batches):
-        # Return the cross-entropy loss.
+        '''
+        Return the cross-entropy loss.
+        '''
         summary_map = {}
         for i in xrange(num_batches):
             dialogue_batch = test_data.next()
             self._run_batch(dialogue_batch, sess, summary_map, test=True)
         return summary_map
+
+    def add_optimizers(self, model, args):
+        optimizers = {'adagrad': optim.Adagrad,
+                          'sgd': optim.SGD,
+                         'adam': optim.Adam}
+        optimizer = optimizers[args.optimizer]
+        return optimizer(model.parameters(), args.learning_rate)
+
+    def create_embeddings(self):
+        # embedding is always tied, can change this to decouple in the future
+        vocab_matrix = self.encoder.create_embedding(self.vocab.size)
+        self.decoder.create_embedding(vocab_matrix, self.vocab.size)
+
+    def _print_batch(self, batch, preds, loss):
+        batcher = self.data.dialogue_batcher
+        textint_map = self.data.textint_map
+        # Go over each example in the batch
+        print '-------------- Batch ----------------'
+        for i in xrange(batch['size']):
+            success = batcher.print_batch(batch, i, textint_map, preds)
+        print 'BATCH LOSS:', loss
 
     def eval(self, sess, name, test_data, num_batches, output=None, modes=('loss',)):
         print '================== Eval %s ==================' % name
@@ -115,147 +108,166 @@ class Learner(object):
                 print '%s time(s)=%.4f' % (self.evaluator.stats2str(results), time.time() - start_time)
         return results
 
-    def learn(args, config, encoder, decoder, sources, targets, criterion):
-      loss = 0
-      encoder_hidden = encoder.initHidden()
-      encoder_length = sources.size()[0]
-      encoder_outputs, encoder_hidden = encoder(sources, encoder_hidden)
-
-      decoder_hidden = encoder_hidden
-      decoder_length = targets.size()[0]
-      decoder_input = smart_variable(torch.LongTensor([[vocab.SOS_token]]))
-      decoder_context = smart_variable(torch.zeros(1, 1, decoder.hidden_size))
-
-      visual = torch.zeros(encoder_length, decoder_length)
-      predictions = []
-      for di in range(decoder_length):
-        use_teacher_forcing = random.random() < args.teach_ratio
-        if decoder.expand_params:
-          decoder_output, decoder_context, decoder_hidden, attn_weights = decoder(
-            decoder_input, decoder_context, decoder_hidden, encoder_outputs,
-            sources, targets, di, use_teacher_forcing)
-        else:
-          decoder_output, decoder_context, decoder_hidden, attn_weights = decoder(
-              decoder_input, decoder_context, decoder_hidden, encoder_outputs)
-        visual[:, di] = attn_weights.squeeze(0).squeeze(0).cpu().data
-        loss += criterion(decoder_output, targets[di])
-
-        if use_teacher_forcing:
-          decoder_input = targets[di]
-        else:       # Use the predicted word as the next input
-          topv, topi = decoder_output.data.topk(1)
-          ni = topi[0][0]
-          predictions.append(ni)
-          if ni == vocab.EOS_token:
-            break
-          decoder_input = smart_variable(torch.LongTensor([[ni]]))
-
-      return loss, predictions, visual
-
-    def clip_gradient(models, clip):
-      '''
-      models: a list, such as [encoder, decoder]
-      clip: amount to clip the gradients by
-      '''
-      if clip is None:
-        return
-      for model in models:
-        clip_grad_norm(model.parameters(), clip)
-
-    def learn(self, args, config, split='train'):
-        # logstats.init(stats_file)
+    def learn(self, args):
+        start = tm.time()
         assert args.min_epochs <= args.max_epochs
-        assert args.optimizer in optim.keys()
-        optimizer = optim[args.optimizer](args.learning_rate)
 
         # Gradient
-        grads_and_vars = optimizer.compute_gradients(self.model.loss)
-        if args.grad_clip > 0:
-            min_grad, max_grad = -1.*args.grad_clip, args.grad_clip
-            clipped_grads_and_vars = [
-                (tf.clip_by_value(grad, min_grad, max_grad) if grad is not None else grad, var) \
-                for grad, var in grads_and_vars]
-        else:
-            clipped_grads_and_vars = grads_and_vars
-        self.grad_norm = tf.global_norm([grad for grad, var in grads_and_vars])
-        self.clipped_grad_norm = tf.global_norm([grad for grad, var in clipped_grads_and_vars])
-        self.grad_norm = self.clipped_grad_norm
+        save_model = False
+        train_steps, train_losses = [], []
+        val_steps, val_losses = [], []
+        bleu_scores, accuracy = [], []
 
-        # Optimize
-        self.train_op = optimizer.apply_gradients(clipped_grads_and_vars)
+        iters = self.train_iterations
+        print_loss_total = 0  # Reset every print_every
+        plot_loss_total = 0  # Reset every plot_every
 
-        # Training loop
-        train_data = self.data.generator(split, self.batch_size)
-        num_per_epoch = train_data.next()
-        step = 0
-        saver = tf.train.Saver()
-        save_path = os.path.join(args.checkpoint, 'tf_model.ckpt')
-        best_saver = tf.train.Saver(max_to_keep=1)
-        best_checkpoint = args.checkpoint+'-best'
-        if not os.path.isdir(best_checkpoint):
-            os.mkdir(best_checkpoint)
-        best_save_path = os.path.join(best_checkpoint, 'tf_model.ckpt')
-        best_loss = float('inf')
-        # Number of iterations without any improvement
-        num_epoch_no_impr = 0
-        self.global_step = 0
+        enc_scheduler = StepLR(self.enc_optimizer, step_size=iters/3, gamma=0.2)
+        dec_scheduler = StepLR(self.dec_optimizer, step_size=iters/3, gamma=0.2)
 
-        # Testing
-        with tf.Session(config=config) as sess:
-            # Summary
-            self.merged_summary = tf.summary.merge_all()
-            self.train_writer = tf.summary.FileWriter(self.summary_dir, sess.graph)
+        for iter in range(1, iters + 1):
+            enc_scheduler.step()
+            dec_scheduler.step()
 
-            sess.run(tf.global_variables_initializer())
-            if args.init_from:
-                saver.restore(sess, ckpt.model_checkpoint_path)
-            summary_map = {}
-            epoch = 1
-            while True:
-                print '================== Epoch %d ==================' % (epoch)
-                for i in xrange(num_per_epoch):
-                    start_time = time.time()
-                    self._run_batch(train_data.next(), sess, summary_map, test=False)
-                    end_time = time.time()
-                    results = self.collect_summary_train(summary_map)
-                    results['time(s)/batch'] = end_time - start_time
-                    results['memory(MB)'] = memory()
-                    results_str = ' '.join(['{}={:.4f}'.format(k, v) for k, v in sorted(results.items())])
-                    step += 1
-                    if step % args.print_every == 0 or step % num_per_epoch == 0:
-                        print '{}/{} (epoch {}) {}'.format(i+1, num_per_epoch, epoch, results_str)
-                        summary_map = {}  # Reset
-                step = 0
+            training_pair = self.train_data.get_batch()
+            input_variable = training_pair[0]
+            output_variable = training_pair[1]
 
-                # Save model after each epoch
-                print 'Save model checkpoint to', save_path
-                saver.save(sess, save_path, global_step=epoch)
+            starting_checkpoint(iter)
+            loss = train(input_variable, output_variable)
+            print_loss_total += loss
+            plot_loss_total += loss
 
-                # Evaluate on dev
-                for split, test_data, num_batches in self.evaluator.dataset():
+            if iter % print_every == 0:
+                print_loss_avg = print_loss_total / print_every
+                print_loss_total = 0
+                print('%d%% complete %s, Train Loss: %.4f' % ((iter / iters * 100),
+                    timeSince(start, iter / iters), print_loss_avg))
+                train_losses.append(print_loss_avg)
+                train_steps.append(iter)
 
-                    results = self.eval(sess, split, test_data, num_batches)
+            if iter % val_every == 0:
+                val_steps.append(iter)
+                batch_val_loss, batch_bleu, batch_success = [], [], []
+                for iter in range(1, self.val_iterations + 1):
+                    val_pair = validation_pairs[iter - 1]
+                    val_input = val_pair[0]
+                    val_output = val_pair[1]
+                    val_loss, bleu_score, turn_success = validate(val_input, \
+                          val_output, task)
+                    batch_val_loss.append(val_loss)
+                    batch_bleu.append(bleu_score)
+                    batch_success.append(turn_success)
 
-                    # Start to record no improvement epochs
-                    loss = results['loss']
-                    if split == 'dev' and epoch > args.min_epochs:
-                        if loss < best_loss * 0.995:
-                            num_epoch_no_impr = 0
-                        else:
-                            num_epoch_no_impr += 1
+                avg_val_loss, avg_bleu, avg_success = evaluate.batch_processing(
+                                              batch_val_loss, bleu_score, batch_success)
+                # val_losses.append(avg_val_loss)
+                bleu_scores.append(avg_bleu)
+                accuracy.append(avg_success)
+                # save_path = os.path.join(args.checkpoint, 'tf_model.ckpt')
+                # best_saver = tf.train.Saver(max_to_keep=1)
+                # best_checkpoint = args.checkpoint+'-best'
 
-                    if split == 'dev' and loss < best_loss:
-                        print 'New best model'
-                        best_loss = loss
-                        best_saver.save(sess, best_save_path)
-                        self.log_results('best_model', results)
-                        logstats.add('best_model', {'epoch': epoch})
+        time_past(start)
+        return train_steps, train_losses, val_steps, val_losses, accuracy
 
-                # Early stop when no improvement
-                if (epoch > args.min_epochs and num_epoch_no_impr >= 5) or epoch > args.max_epochs:
+    def run_inference(sources, targets, teach_ratio):
+        loss = 0
+        encoder_hidden = self.encoder.initHidden()
+        encoder_length = sources.size()[0]
+        encoder_outputs, encoder_hidden = self.encoder(sources, encoder_hidden)
+
+        decoder_hidden = encoder_hidden
+        decoder_length = targets.size()[0]
+        decoder_input = smart_variable(torch.LongTensor([[vocab.SOS_token]]))
+        decoder_context = smart_variable(torch.zeros(1, 1, self.decoder.hidden_size))
+        # visual = torch.zeros(encoder_length, decoder_length)
+        predictions = []
+
+        for di in range(decoder_length):
+            use_teacher_forcing = random.random() < self.teach_ratio
+            decoder_output, decoder_context, decoder_hidden, attn_weights = self.decoder(
+                decoder_input, decoder_context, decoder_hidden, encoder_outputs)
+
+            # visual[:, di] = attn_weights.squeeze(0).squeeze(0).cpu().data
+            loss += self.criterion(decoder_output, targets[di])
+
+            if use_teacher_forcing:
+                decoder_input = targets[di]
+            else:       # Use the predicted word as the next input
+                topv, topi = decoder_output.data.topk(1)
+                ni = topi[0][0]
+                predictions.append(ni)
+                if ni == vocab.EOS_token:
                     break
-                epoch += 1
+                decoder_input = smart_variable(torch.LongTensor([[ni]]))
 
-    def log_results(self, name, results):
-        logstats.add(name, {'loss': results.get('loss', None)})
-        logstats.add(name, self.evaluator.log_dict(results))
+        return loss, predictions
+
+    def train(input_variable, target_variable):
+        self.encoder.train()
+        self.decoder.train()
+        self.enc_optimizer.zero_grad()
+        self.dec_optimizer.zero_grad()
+
+        loss, _ = run_inference(input_variable, target_variable, self.teach_ratio)
+
+        loss.backward()
+        if args.grad_clip > 0:
+            clip_grad_norm(self.encoder.parameters(), args.grad_clip)
+            clip_grad_norm(self.decoder.parameters(), args.grad_clip)
+        enc_optimizer.step()
+        dec_optimizer.step()
+
+        return loss.data[0] / target_variable.size()[0]
+
+    def validate(input_variable, target_variable, task):
+        self.encoder.eval()  # affects the performance of dropout
+        self.decoder.eval()
+
+        loss, predictions = run_inference(input_variable, target_variable, teach_ratio=0)
+
+        queries = input_variable.data.tolist()
+        targets = target_variable.data.tolist()
+        predicted_tokens = [vocab.index_to_word(x, task) for x in predictions]
+        query_tokens = [vocab.index_to_word(y[0], task) for y in queries]
+        target_tokens = [vocab.index_to_word(z[0], task) for z in targets]
+
+        avg_loss = loss.data[0] / target_variable.size()[0]
+        bleu_score = 14 # compute_bleu(predicted_tokens, target_tokens)
+        turn_success = [pred == tar[0] for pred, tar in zip(predictions, targets)]
+
+        return avg_loss, bleu_score, all(turn_success)
+
+        # Save model after each epoch
+        # print 'Save model checkpoint to', save_path
+        # saver.save(sess, save_path, global_step=epoch)
+
+        # Evaluate on dev
+        # for split, test_data, num_batches in self.evaluator.dataset():
+
+        #     results = self.eval(sess, split, test_data, num_batches)
+
+        #     # Start to record no improvement epochs
+        #     loss = results['loss']
+        #     if split == 'dev' and epoch > args.min_epochs:
+        #         if loss < best_loss * 0.995:
+        #             num_epoch_no_impr = 0
+        #         else:
+        #             num_epoch_no_impr += 1
+
+        #     if split == 'dev' and loss < best_loss:
+        #         print 'New best model'
+        #         best_loss = loss
+        #         best_saver.save(sess, best_save_path)
+        #         self.log_results('best_model', results)
+        #         logstats.add('best_model', {'epoch': epoch})
+
+        # # Early stop when no improvement
+        # if (epoch > args.min_epochs and num_epoch_no_impr >= 5) or epoch > args.max_epochs:
+        #     break
+        # epoch += 1
+
+    # def log_results(self, name, results):
+    #     logstats.add(name, {'loss': results.get('loss', None)})
+    #     logstats.add(name, self.evaluator.log_dict(results))
