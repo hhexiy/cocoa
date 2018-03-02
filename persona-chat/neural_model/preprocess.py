@@ -34,7 +34,7 @@ def build_vocab(dialogues, special_symbols=[], entity_forms=[]):
     vocab = Vocabulary(offset=0, unk=True)
 
     for dialogue in dialogues:
-        for token in dialogue.split():
+        for token in tokenize(dialogue):
             vocab.add_word(token)
 
     # Add special symbols
@@ -99,6 +99,7 @@ def generate_data():
 
         write_pickle(all_batches, out_filename)
     vocabulary = build_vocab(all_sentences, markers)
+    pdb.set_trace()
     write_pickle(vocabulary, "data/persona_vocab.pkl")
 
 if __name__ == "__main__":
