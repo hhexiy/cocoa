@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import pdb  # set_trace
 
 from cocoa.pt_model.util import EPS, smart_variable
-from cocoa.model.sequence_embedder import AttentionRNNEmbedder, BoWEmbedder
+# from cocoa.model.sequence_embedder import AttentionRNNEmbedder, BoWEmbedder
 from preprocess import markers
 
 def add_model_arguments(parser):

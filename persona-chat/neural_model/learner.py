@@ -45,8 +45,8 @@ class Learner(object):
         self.end_token = vocab.word_to_ind['</s>']
         # self.evaluator = evaluator
 
-        self.train_data = DialogueBatcher(vocab, "toy")
-        self.val_data = DialogueBatcher(vocab, "toy")
+        self.train_data = DialogueBatcher(vocab, "train")
+        self.val_data = DialogueBatcher(vocab, "valid")
         # self.test_data = DialogueBatcher(vocab, "test")
 
         self.summary_dir = args.summary_dir
