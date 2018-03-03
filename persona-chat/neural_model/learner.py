@@ -140,11 +140,11 @@ class Learner(object):
             if iter % self.val_every == 0:
                 val_steps.append(iter)
                 batch_val_loss, batch_bleu = [], []
-                for iter in range(1, self.val_iterations + 1):
+                for val_iter in range(1, self.val_iterations + 1):
                     val_pair = self.val_data.get_batch()
                     val_input = val_pair[0]
                     val_output = val_pair[1]
-                    val_loss, bleu_score = self.validate(val_input, val_output)
+                    val_loss, bleu_score = self.validate(val_input, val_output, val_iter)
                     batch_val_loss.append(val_loss)
                     batch_bleu.append(bleu_score)
 
@@ -207,7 +207,7 @@ class Learner(object):
 
         return loss.data[0] / target_variable.size()[0]
 
-    def validate(self, input_variable, target_variable):
+    def validate(self, input_variable, target_variable, val_iter):
         self.encoder.eval()  # affects the performance of dropout
         self.decoder.eval()
 
@@ -218,8 +218,12 @@ class Learner(object):
         # query_tokens = [self.vocab.ind_to_word[y] for y in queries]
         target_tokens = [self.vocab.ind_to_word[z] for z in targets]
 
+        if val_iter % 200 == 0:
+            print("Target: {}".format(" ".join(target_tokens)))
+            print("Predicted: {}".format(" ".join(predicted_tokens)))
+
         avg_loss = loss.data[0] / target_variable.size()[0]
-        bleu_score = compute_bleu(predicted_tokens, target_tokens) * 100
+        bleu_score = compute_bleu(predicted_tokens, target_tokens)
         # turn_success = [pred == tar for pred, tar in zip(predictions, targets)]
         return avg_loss, bleu_score
 
