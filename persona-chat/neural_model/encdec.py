@@ -50,6 +50,7 @@ class Bid_Attn_Decoder(nn.Module):
         # Get the embedding of the current input word (i.e. last output word)
         embedded = self.embedding(word_input).view(1, 1, -1)        # 1 x 1 x N
         embedded = self.dropout(embedded)
+        embedded = smart_variable(embedded, "var")
         # Combine input word embedding and previous hidden state, run through RNN
         rnn_input = torch.cat((embedded, last_context), dim=2)
         pdb.set_trace()
@@ -87,6 +88,7 @@ class Attn_Decoder(nn.Module):
         # Get the embedding of the current input word (i.e. last output word)
         embedded = self.embedding(word_input).view(1, 1, -1)        # 1 x 1 x N
         embedded = self.dropout(embedded)
+        embedded = smart_variable(embedded, "var")
         # Combine input word embedding and previous hidden state, run through RNN
         rnn_input = torch.cat((embedded, last_context), dim=2)
         # pdb.set_trace()
@@ -119,6 +121,7 @@ class LSTM_Decoder(nn.Module):
 
     def forward(self, word_input, prev_hidden):
         embedded = self.embedding(word_input).view(1, 1, -1)
+        embedded = smart_variable(embedded, "var")
         rnn_output, current_hidden = self.lstm(embedded, prev_hidden)
         output = F.log_softmax(self.out(rnn_output[0]), dim=1)
         return output, current_hidden
@@ -177,6 +180,7 @@ class Bid_Encoder(nn.Module):
     def forward(self, word_inputs, hidden):
         seq_len = len(word_inputs)  # now a matrix multiplication
         embedded = self.embedding(word_inputs).view(seq_len, 1, -1)
+        embedded = smart_variable(embedded, "var")
         output, hidden = self.gru(embedded, hidden)
         return output, hidden
 
@@ -197,7 +201,7 @@ class GRU_Encoder(nn.Module):
     def forward(self, word_inputs, hidden):
         seq_len = len(word_inputs)
         embedded = self.embedding(word_inputs).view(seq_len, 1, -1)
-        pdb.set_trace()
+        embedded = smart_variable(embedded, "var")
         output, hidden = self.gru(embedded, hidden)
         return output, hidden
 
@@ -215,11 +219,10 @@ class LSTM_Encoder(nn.Module):
         self.embedding = nn.Embedding(vocab_size, self.hidden_size)
         return self.embedding
 
-    def forward(self, input, hidden):
-        embedded = self.embedding(input).view(1, 1, -1)
-        output = embedded
-        for i in range(self.n_layers):
-            output, hidden = self.lstm(output, hidden)
+    def forward(self, word_inputs, hidden):
+        embedded = self.embedding(word_inputs).view(1, 1, -1)
+        embedded = smart_variable(embedded, "var")
+        output, hidden = self.lstm(embedded, hidden)
         return output, hidden
 
     def initHidden(self):
