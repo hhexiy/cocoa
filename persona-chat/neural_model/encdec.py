@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pdb  # set_trace
 
-from cocoa.pt_model.util import EPS, smart_variable
+from cocoa.pt_model.util import EPS, smart_variable, basic_variable
 # from cocoa.model.sequence_embedder import AttentionRNNEmbedder, BoWEmbedder
 from preprocess import markers
 
@@ -197,6 +197,7 @@ class GRU_Encoder(nn.Module):
     def forward(self, word_inputs, hidden):
         seq_len = len(word_inputs)
         embedded = self.embedding(word_inputs).view(seq_len, 1, -1)
+        pdb.set_trace()
         output, hidden = self.gru(embedded, hidden)
         return output, hidden
 

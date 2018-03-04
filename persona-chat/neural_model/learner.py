@@ -7,7 +7,7 @@ import pdb # set_trace()
 from cocoa.lib import logstats
 from cocoa.lib.bleu import compute_bleu
 from neural_model.batcher import DialogueBatcher
-from cocoa.pt_model.util import smart_variable
+from cocoa.pt_model.util import smart_variable, basic_variable
 # from cocoa.model.learner import Learner as BaseLearner, add_learner_arguments
 
 from torch.nn import NLLLoss, parameter
@@ -45,10 +45,8 @@ class Learner(object):
         self.end_token = vocab.word_to_ind['</s>']
         # self.evaluator = evaluator
 
-        self.train_data = DialogueBatcher(vocab, "toy")
-        self.val_data = DialogueBatcher(vocab, "toy")
-        # self.train_data = DialogueBatcher(vocab, "train")
-        # self.val_data = DialogueBatcher(vocab, "valid")
+        self.train_data = DialogueBatcher(vocab, "train")
+        self.val_data = DialogueBatcher(vocab, "valid")
         # self.test_data = DialogueBatcher(vocab, "test")
 
         self.summary_dir = args.summary_dir
@@ -167,7 +165,7 @@ class Learner(object):
 
         decoder_hidden = encoder_hidden
         decoder_length = targets.size()[0]
-        decoder_input = smart_variable([self.start_token], "list")
+        decoder_input = basic_variable([self.start_token])
         decoder_context = smart_variable(torch.zeros(1, 1, self.decoder.hidden_size))
         # visual = torch.zeros(encoder_length, decoder_length)
         predictions = []

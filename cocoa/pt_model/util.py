@@ -1,11 +1,11 @@
 from itertools import izip
 import numpy as np
+import torch
 from torch.autograd import Variable
-from torch import cuda
-from torch import LongTensor
+
 
 EPS = 1e-12
-use_cuda = cuda.is_available()
+use_cuda = torch.cuda.is_available()
 
 def safe_div(numerator, denominator):
     return numerator / (denominator + EPS)
@@ -62,9 +62,16 @@ def batch_linear(args, output_size, bias):
     output = tf.reshape(flat_output, [batch_size, -1, output_size])
     return output
 
+def basic_variable(data, dtype="long"):
+    if dtype == "long":
+        tensor = torch.LongTensor(data)
+    elif dtype == "float":
+        tensor = torch.FloatTensor(data)
+    return Variable(tensor)
+
 def smart_variable(data, dtype="tensor"):
     if dtype == "list":
-        result = Variable(LongTensor(data))
+        result = basic_variable(data)
     elif dtype == "tensor":
         result = Variable(data)
     elif dtype == "var":
